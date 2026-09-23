@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>360 Photo</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@5/index.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/markers-plugin@5/index.css"><style>
+  html, body { margin: 0; height: 100%; background: #000; }
+  /* isolate the viewer into its own stacking context so PSV's internal z-indexes (markers
+     up to 30, tooltips 50) can't rise above page-level overlays like the banner */
+  #viewer { width: 100%; height: 100%; isolation: isolate; }
+  #banner {
+    position: fixed; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+    z-index: 5; pointer-events: none; overflow: hidden;
+    padding: 0.6em 0; text-align: center;
+    background: rgba(255, 212, 0, 0.3);
+    mix-blend-mode: screen;
+    color: #ffffff;
+    font-family: 'Formular', system-ui, sans-serif;
+    font-weight: 700;
+    font-size: 12pt;
+    letter-spacing: 0.2em;
+  }
+  .psv-tooltip, .psv-tooltip .psv-tooltip-content {
+    color: #ffffff;
+    font-family: 'Formular', system-ui, sans-serif;
+    font-weight: 400;
+    font-size: 12pt;
+    text-shadow: none;
+  }
+  .psv-tooltip .psv-tooltip-content { padding: 0.7em; }
+  /* header keeps the tooltip's existing look (Formular 400/12pt/white); body is
+     deliberately smaller and dimmer so the two read as a clear hierarchy, not two
+     lines of the same weight */
+  .psv-tooltip-content h1 { margin: 0 0 0.375em; font: 400 12pt 'Formular', system-ui, sans-serif; color: #ffffff; }
+  .psv-tooltip-content h1:last-child { margin-bottom: 0; }
+  .psv-tooltip-content p { margin: 0; font: 400 10pt 'Formular', system-ui, sans-serif; color: rgba(255, 255, 255, 0.65); line-height: 1.35; }
+  /* rich previews (thumbnail/OG image + title + description: video markers and link previews
+     like the White Paper and Intelligent Systems cards) get a wider box than the plain-text
+     tooltip default (200px) — sized so the White Paper title's two lines ("...Trusted in" /
+     "Safety-Critical Applications") each fit without re-wrapping (first line measures 333.5px
+     in Formular 12pt, + 22.4px padding); every other rich-preview title is short enough to
+     stay on one line at this width, and none should exceed it */
+  .psv-tooltip:has(.psv-tooltip-content > img) { max-width: 360px; }
+  /* video preview thumbnail bleeds to the tooltip's edges rather than sitting inset by the
+     content div's own padding (0.7em, matched here so the math cancels out exactly). bottom
+     margin is set so the visible gap from thumbnail to title cap height (~14.5px) matches the
+     gap from title baseline to description cap height */
+  .psv-tooltip-content img { display: block; width: calc(100% + 1.4em); margin: -0.7em -0.7em 0.62em; border-radius: 2px 2px 0 0; }
+  /* content-type label (<h2>, e.g. "White Paper") above the thumbnail — sits in the normal padded
+     flow, so the image below it keeps its left/right/bottom bleed but not its top bleed,
+     or it would slide up underneath this label instead of sitting below it */
+  .psv-tooltip-content h2 { display: block; margin: 0.4em 0 0.75em; font: 700 8pt 'Formular', system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; color: #ffffff; }
+  /* arrows have no tooltip/click yet, so PSV's default marker cursor ("move") shows instead
+     of "pointer" — override it so they still read as clickable on hover */
+  .psv-marker.tour-arrow { cursor: pointer; }
+  /* arrow for the map zone currently hovered: pulses so it's easy to spot once the view turns to it */
+  .psv-marker.tour-arrow--focus svg { animation: arrow-pulse 0.9s ease-in-out infinite; transform-origin: center; }
+  @keyframes arrow-pulse {
+    0%, 100% { transform: scale(1); filter: drop-shadow(0 0 0 rgba(255, 194, 0, 0)); }
+    50% { transform: scale(1.3); filter: drop-shadow(0 0 6px rgba(255, 194, 0, 0.95)); }
+  }
+  .psv-tooltip-content h2 + img { margin-top: 0; }
+  /* hoverable tooltips (see the script): PSV sets pointer-events: none inline, overridden here so
+     the pointer can move onto the tooltip without it closing */
+  .psv-tooltip--live { pointer-events: auto !important; cursor: pointer; }
+  .psv-tooltip-content { position: relative; }
+  /* muted Vimeo preview laid exactly over the video thumbnail, faded in once loaded so the
+     thumbnail shows until then; clicks pass through to the tooltip (which opens the full card) */
+  .psv-tooltip-content .tt-video { position: absolute; border: 0; pointer-events: none; opacity: 0; transition: opacity 0.3s; border-radius: 2px 2px 0 0; }
+  .psv-tooltip-content .tt-video.ready { opacity: 1; }
+  .psv-tooltip { background: #000000; border-radius: 2px; box-shadow: none; }
+  .psv-tooltip--top-left .psv-tooltip-arrow, .psv-tooltip--top-center .psv-tooltip-arrow, .psv-tooltip--top-right .psv-tooltip-arrow { border-top-color: #000000; }
+  .psv-tooltip--bottom-left .psv-tooltip-arrow, .psv-tooltip--bottom-center .psv-tooltip-arrow, .psv-tooltip--bottom-right .psv-tooltip-arrow { border-bottom-color: #000000; }
+  .psv-tooltip--left-top .psv-tooltip-arrow, .psv-tooltip--center-left .psv-tooltip-arrow, .psv-tooltip--left-bottom .psv-tooltip-arrow { border-left-color: #000000; }
+  .psv-tooltip--right-top .psv-tooltip-arrow, .psv-tooltip--center-right .psv-tooltip-arrow, .psv-tooltip--right-bottom .psv-tooltip-arrow { border-right-color: #000000; }
+  #card { position: fixed; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.6); }
+  #card.open { display: flex; }
+  #card .box { position: relative; width: min(92vw, 720px); background: #000000; border-radius: 2px; color: #ffffff; font-family: 'Formular', system-ui, sans-serif; }
+  #card .video { aspect-ratio: 16 / 9; width: 100%; }
+  #card iframe { display: block; width: 100%; height: 100%; border: 0; }
+  #card .text { padding: 0.75em 1em 1em; }
+  #card h2 { margin: 0 0 0.4em; font-size: 14pt; font-weight: 700; }
+  #card p { margin: 0; font-size: 12pt; font-weight: 400; line-height: 1.4; }
+  #card p:empty { display: none; }
+  #card .close { position: absolute; top: -2.4em; right: 0; padding: 0.4em 0.6em; border: 0; background: none; color: #ffffff; font: 400 16pt system-ui; cursor: pointer; }
+  /* map/legend inset: caption strip on top, aerial below. 80% opacity at rest so it sits back
+     from the panorama, full opacity while the pointer is over it so zone highlights read clearly */
+  #map { position: fixed; right: 12px; top: 12px; width: 240px; z-index: 10; overflow: hidden; background: #000000; border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 6px; opacity: 0.8; transition: opacity 0.2s; }
+  #map:hover { opacity: 1; }
+  #map-caption { padding: 6px 8px 5px; color: #ffffff; font: 700 8pt 'Formular', system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
+  #map-caption small { font-weight: 400; letter-spacing: 0.04em; text-transform: none; color: rgba(255, 255, 255, 0.65); margin-left: 6px; }
+  #map-view { position: relative; height: 160px; }
+  #map-svg { display: block; width: 100%; height: 100%; }
+  /* hot zones: invisible until hovered, then filled in the zone yellow from the Illustrator file */
+  #map-svg .zone { fill: #ffc200; fill-opacity: 0; cursor: pointer; transition: fill-opacity 0.15s; }
+  #map-svg .zone:hover { fill-opacity: 0.6; }
+  #map-svg .zone.current { fill: #ff9500; fill-opacity: 0.75; cursor: default; }
+  #map-label { position: absolute; left: 6px; bottom: 6px; padding: 2px 6px; background: #000000; border-radius: 2px; color: #ffffff; font: 700 8pt 'Formular', system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; pointer-events: none; opacity: 0; transition: opacity 0.15s; }
+  #map-label.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="viewer"></div>
+<div id="banner">UNDER CONSTRUCTION</div>
+<div id="map"><div id="map-caption">You Are Here<small id="map-here"></small></div><div id="map-view"><svg id="map-svg" viewBox="0 0 1200 800"></svg><div id="map-label"></div></div></div>
+<div id="card"><div class="box">
+  <button class="close" aria-label="Close">✕</button>
+  <div class="video"></div>
+  <div class="text"><h2></h2><p></p></div>
+</div></div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169/build/three.module.js",
+  "@photo-sphere-viewer/core": "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@5/index.module.js",
+  "@photo-sphere-viewer/markers-plugin": "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/markers-plugin@5/index.module.js"
+} }
+</script>
+<script type="module">
+import { Viewer } from '@photo-sphere-viewer/core';
+import { MarkersPlugin } from '@photo-sphere-viewer/markers-plugin';
+
+// markers that open a video card instead of only a tooltip. thumbnail is fetched once via
+// Vimeo's oEmbed endpoint (vimeo.com/api/oembed.json?url=...) and hardcoded here, same as
+// every other hand-placed value on this page — no runtime API call needed to show it.
+const cards = {
+  spot1: {
+    vimeo: '1223937006', title: 'Technology Adoption in India',
+    description: 'India’s automotive market is embracing AI, ADAS and next-generation user experiences while balancing affordability and local customer needs.',
+    thumbnail: 'https://i.vimeocdn.com/video/2201232622-35eaaa6ad5493726d2cf367c7a0d271a206c68cf3cec6945a43559fa0538afc8-d_295x166?region=us',
+  },
+  spot6: {
+    vimeo: '1206084521', title: 'Moving at the Speed of China',
+    description: "China's automotive market is accelerating electrification, ADAS adoption and global expansion, creating new opportunities for OEMs and technology partners.",
+    thumbnail: 'https://i.vimeocdn.com/video/2189964913-70fbe38a5505a216633e8dc853170a6d2205b1cf6fee3b04cf67d71cdb2ae327-d_295x166?region=us',
+  },
+};
+
+// markers that open a link in a new window. `label` is just for the hover preview (used when
+// there's no `preview` block) — the marker still opens `url` on click, unchanged either way.
+// `preview` is a richer hover format (image + title + description), used when the destination
+// page happens to publish Open Graph tags — fetched once and hardcoded here, same idea as the
+// video thumbnails above, not a live fetch from the page itself.
+const links = {
+  spot2: {
+    url: 'https://www.aptiv.com/en/solutions/intelligent-systems', label: 'Intelligent Systems',
+    preview: {
+      image: 'https://www.aptiv.com/images/default-source/intelligent-systems/aptiv-com_web_intelligentsystems_og.webp?sfvrsn=894e4f36_1',
+      title: 'Intelligent Systems',
+      description: 'We bring together sensing, compute and software capabilities to enable reliable and scalable solutions.',
+    },
+  },
+  spot3: { url: 'http://aptiv.com', label: 'Welcome to Aptiv' },
+  spot5: {
+    url: 'https://www.aptiv.com/en/solutions/connection-systems/catalog',
+    preview: {
+      kind: 'Aptiv e-Catalog',
+      image: 'https://www.aptiv.com/images/default-source/e-catalog/connected-services-og.jpg?sfvrsn=986c1e38_2',
+      title: 'Connection Systems Catalog',
+      description: 'Aptiv delivers a full range of advanced connection solutions to make vehicles safer, greener and more connected with innovations in high voltage, data connectivity, electrical centers, safety-critical connectors and much more.',
+    },
+  },
+  spot4: {
+    url: 'volvo/',
+    sameTab: true,   // another tour: walk through in this tab, like the Volvo's arrow back
+    preview: {
+      kind: '360 Tour',
+      image: 'tour_preview.jpg',
+      title: 'Step Inside: Vehicle Interior',
+      description: 'Look around the cabin in 360° and hover the markers to explore each feature.',
+    },
+  },
+  spot7: {
+    url: 'https://www.aptiv.com/en/insights/article/built-for-impact-srs-connectors-trusted-in-safety-critical-applications',
+    preview: {
+      kind: 'White Paper',
+      image: 'https://www.aptiv.com/images/default-source/feature-stories/2026_aptiv_srsairbag_whitepaper_opengraph_1200x627_ship.webp?sfvrsn=2a0c4136_1',
+      title: 'Built for Impact: SRS Connectors Trusted in<br>Safety-Critical Applications',
+      description: 'This white paper explores connector innovations addressing ESD, partial mating, mis mating, environmental stress and global standards, such as ABX 5 and AK 2.',
+    },
+  },
+};
+
+// placeholder copy while we test the header/body layout — swap for real text per marker later
+const lorem = '<h1>Lorem Ipsum Sit Amet</h1><p>Lorem ipsum dolor sit amet consectetur adipiscing elit et quas ad distinctio deleniti temporibus ipsum aute tempore sit sint et aliquip autem mollitia.</p>';
+
+// Three tooltip formats: a video marker previews its thumbnail + title, a link marker
+// previews its label + destination domain, and everything else gets the plain header/body.
+// All three still keep their click behavior (opens the video card / the link) unchanged —
+// this only changes what shows on hover, before that click.
+function previewFor(id) {
+  if (cards[id]) {
+    const c = cards[id];
+    return `<h2>Video</h2><img src="${c.thumbnail}" alt=""><h1>${c.title}</h1>${c.description ? `<p>${c.description}</p>` : ''}`;
+  }
+  if (links[id]) {
+    const l = links[id];
+    const site = l.site || new URL(l.url, location.href).hostname.replace(/^www\./, '');
+    // links into aptiv.com get an "Aptiv.com" <h2> label unless they name a more specific
+    // kind (e.g. "White Paper"); the plain format then drops its domain line, which would
+    // just repeat the label
+    const onAptiv = site === 'aptiv.com' || site.endsWith('.aptiv.com');
+    if (l.preview) {
+      const kind = l.preview.kind || (onAptiv ? 'Aptiv.com' : '');
+      return `${kind ? `<h2>${kind}</h2>` : ''}<img src="${l.preview.image}" alt=""><h1>${l.preview.title}</h1><p>${l.preview.description}</p>`;
+    }
+    return onAptiv ? `<h2>Aptiv.com</h2><h1>↗ ${l.label}</h1>` : `<h1>↗ ${l.label}</h1><p>${site}</p>`;
+  }
+  return lorem;
+}
+
+const livingMarkers = [{
+    id: 'spot1',   // Technology Adoption in India — video
+    position: { yaw: '278.8deg', pitch: '-12.0deg' },
+    image: 'icons/torus.webp', size: { width: 45, height: 48 },
+  }, {
+    id: 'spot2',   // Intelligent Systems — outbound link
+    position: { yaw: '198.9deg', pitch: '-3.3deg' },
+    image: 'icons/triangle.webp', size: { width: 45, height: 48 },
+  }, {
+    id: 'spot3',   // Welcome to Aptiv — outbound link, aptiv.com
+    position: { yaw: '320.9deg', pitch: '2.6deg' },
+    image: 'icons/cylinder.webp', size: { width: 45, height: 48 },
+  }, {
+    id: 'spot4',   // Beyond Detection: The Future of In-Cabin Experiences — outbound link, article
+    position: { yaw: '257.5deg', pitch: '-11.6deg' },
+    image: 'icons/cube.webp', size: { width: 45, height: 48 },
+  }, {
+    id: 'spot5',   // Connection Systems Catalog — outbound link, Aptiv e-Catalog
+    position: { yaw: '101.5deg', pitch: '-5.9deg' },
+    image: 'icons/pentagon.webp', size: { width: 45, height: 48 },
+  }, {
+    id: 'spot6',   // En trono de la perro — video
+    position: { yaw: '141.0deg', pitch: '-3.2deg' },
+    image: 'icons/torus.webp', size: { width: 45, height: 48 },
+  }, {
+    id: 'spot7',   // Chief Asador — outbound link
+    position: { yaw: '78.8deg', pitch: '-8.0deg' },
+    image: 'icons/coins.webp', size: { width: 45, height: 48 },
+  }].map(m => ({ ...m, tooltip: { content: previewFor(m.id), trigger: !cards[m.id] && !links[m.id] && matchMedia('(hover: none)').matches ? 'click' : 'hover' } }));
+
+// direction arrows, placed for now with no click action
+const arrowSvg = '<svg viewBox="0 0 100 100" width="27" height="27"><circle cx="50" cy="50" r="44" fill="#ffffff"/><path d="M28 58 L50 36 L72 58" fill="none" stroke="#111111" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const arrowMarkers = [
+  { id: 'arrow1', position: { yaw: '192.1deg', pitch: '-5.5deg' } },
+  { id: 'arrow2', position: { yaw: '140.5deg', pitch: '-13.1deg' } },
+  { id: 'arrow3', position: { yaw: '89.7deg', pitch: '-5.8deg' } },
+  { id: 'arrow4', position: { yaw: '21.0deg', pitch: '-5.9deg' } },
+].map(m => ({ ...m, html: arrowSvg, size: { width: 27, height: 27 }, className: 'tour-arrow' }));
+
+// opening view, also where hovering the map's "you are here" zone re-centers to
+const START_VIEW = { yaw: '319.0deg', pitch: '-6.5deg' };
+const viewer = new Viewer({
+  container: 'viewer', panorama: 'photo.jpg', defaultZoomLvl: 30, navbar: false,
+  defaultYaw: START_VIEW.yaw, defaultPitch: START_VIEW.pitch,
+  plugins: [[MarkersPlugin, { markers: [...livingMarkers, ...arrowMarkers] }]],
+});
+
+viewer.addEventListener('click', ({ data }) => {
+  const d = r => (r * 180 / Math.PI).toFixed(1) + 'deg';
+  console.log(`{ yaw: '${d(data.yaw)}', pitch: '${d(data.pitch)}' }`);
+});
+
+const card = document.getElementById('card');
+const openCard = c => {
+  const frame = document.createElement('iframe');
+  frame.src = `https://player.vimeo.com/video/${c.vimeo}?title=0&byline=0&portrait=0&badge=0&autopause=0&player_id=0&app_id=58479`;
+  frame.allow = 'autoplay; fullscreen; picture-in-picture; clipboard-write; encrypted-media; web-share';
+  frame.referrerPolicy = 'strict-origin-when-cross-origin';
+  frame.title = c.title;
+  card.querySelector('.video').replaceChildren(frame);
+  card.querySelector('h2').textContent = c.title;
+  card.querySelector('p').textContent = c.description;
+  card.classList.add('open');
+};
+const closeCard = () => {
+  card.classList.remove('open');
+  card.querySelector('.video').replaceChildren();   // removing the iframe stops playback
+};
+// links open in a new tab, except `sameTab` ones (other tours), which navigate this tab
+const openLink = l => l.sameTab ? (window.location.href = l.url) : window.open(l.url, '_blank', 'noopener,noreferrer');
+viewer.getPlugin(MarkersPlugin).addEventListener('select-marker', ({ marker }) => {
+  if (cards[marker.id]) openCard(cards[marker.id]);
+  if (links[marker.id]) openLink(links[marker.id]);
+});
+card.addEventListener('click', e => { if (e.target === card || e.target.classList.contains('close')) closeCard(); });
+
+// Hoverable tooltips. PSV hides a hover tooltip the instant the pointer leaves its marker, and
+// gives it pointer-events: none, so the pointer can never reach it. Here each hover marker's
+// hideTooltip is deferred by a short grace period, cancelled if the pointer lands on the
+// tooltip (or back on the marker) in the meantime; leaving the tooltip hides it again. Clicking
+// the tooltip does the same as clicking its marker. Video tooltips also play a muted, looping
+// Vimeo preview over their thumbnail while open — the iframe is only created on show and removed
+// on hide, so nothing loads until someone actually hovers.
+const HIDE_GRACE = 300;
+const markersPlugin = viewer.getPlugin(MarkersPlugin);
+const selectMarker = id => {
+  if (cards[id]) openCard(cards[id]);
+  if (links[id]) openLink(links[id]);
+};
+// markers only exist once the panorama has loaded, hence waiting for 'ready'
+viewer.addEventListener('ready', () => livingMarkers.filter(m => m.tooltip.trigger === 'hover').forEach(({ id }) => {
+  const marker = markersPlugin.getMarker(id);
+  const show = marker.showTooltip.bind(marker), hide = marker.hideTooltip.bind(marker);
+  let timer = null;
+  const hideNow = () => { clearTimeout(timer); timer = null; hide(); };
+  marker.showTooltip = (...args) => {
+    clearTimeout(timer); timer = null;
+    const isNew = !marker.tooltip;
+    show(...args);
+    const tip = marker.tooltip;
+    if (!isNew || !tip) return;
+    tip.container.classList.add('psv-tooltip--live');
+    tip.container.addEventListener('mouseenter', () => { clearTimeout(timer); timer = null; });
+    tip.container.addEventListener('mouseleave', () => { if (markersPlugin.state.hoveringMarker !== marker) hideNow(); });
+    tip.container.addEventListener('click', () => { hideNow(); selectMarker(id); });
+    if (cards[id]) {
+      const img = tip.content.querySelector('img');
+      const frame = document.createElement('iframe');
+      frame.className = 'tt-video';
+      frame.src = `https://player.vimeo.com/video/${cards[id].vimeo}?autoplay=1&muted=1&loop=1&controls=0&title=0&byline=0&portrait=0&badge=0&dnt=1`;
+      frame.allow = 'autoplay';
+      frame.addEventListener('load', () => frame.classList.add('ready'));
+      const place = () => Object.assign(frame.style, { top: `${img.offsetTop}px`, left: `${img.offsetLeft}px`, width: `${img.offsetWidth}px`, height: `${img.offsetHeight}px` });
+      if (img.complete) place(); else img.addEventListener('load', place);
+      img.after(frame);
+    }
+  };
+  marker.hideTooltip = () => {
+    if (!marker.tooltip || timer) return;
+    timer = setTimeout(hideNow, HIDE_GRACE);
+  };
+}), { once: true });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCard(); });
+
+// Map/legend inset. Background is the aerial from the Illustrator artboard (360Tour_Map.svg,
+// 1200x800) flattened to map/aerial.webp with its clip/rotation/scale baked in; the hot zones
+// below are that file's shapes copied verbatim, so they share its 1200x800 coordinates. Zones
+// stay invisible until hovered, then fill and show their name; hovering a zone with an `arrow`
+// also turns the panorama to face that arrow (the way there) and pulses it. `target` is where a click will
+// navigate once there's a second panorama to go to — until then a click just logs the zone.
+const mapZones = [
+  { id: 'alcove', name: 'Alcove', target: null, arrow: 'arrow2',
+    shape: '<rect x="357.65" y="254.71" width="264.24" height="83.32"/>' },
+  { id: 'alcove-2', name: 'Tech Theater', target: null, current: true,
+    shape: '<path d="M756.42,309.68c-2.87.55-8.73,4.76-21.78,31.57-6.11,12.54-14.11,95.6-3.18,117.46.73,1.45-.79,10.25,7.47,23.29,6.39,10.08,9.74,23.6,22.55,24.37,20.97,1.26,33.93-29.13,34.1-33.66,1.17-31.69,2.19-82.38,1.27-114.46-.52-17.96-15.46-36.71-22.28-42.24-4.73-3.84-7.53-8.37-18.15-6.33Z"/>' },
+  { id: 'entrance', name: 'Entrance', target: null, arrow: 'arrow3',
+    shape: '<rect x="758.24" y="332.32" width="295.12" height="153.13" transform="translate(1314.6806 -496.9137) rotate(90)"/>' },
+  { id: 'back-of-house', name: 'Back of House', target: null, arrow: 'arrow1',
+    shape: '<rect x="365.36" y="482.34" width="264.24" height="83.32"/>' },
+];
+// the zone with `current: true` is where this panorama was taken: it stays lit instead of only
+// on hover, and its name fills the caption ("You are here · Tech Theater")
+document.getElementById('map-here').textContent = mapZones.find(z => z.current)?.name ?? '';
+// aim a little above the arrow rather than dead-center on it, so it lands just below the
+// mid-screen UNDER CONSTRUCTION banner instead of behind it (can go to 0 once the banner does)
+const ARROW_VIEW_LIFT = 8;   // degrees
+
+// After Effects-style easy ease for the turn: 70% influence out of the start keyframe and 70% into
+// the end one, both at 0 speed — i.e. cubic-bezier(0.7, 0, 0.3, 1). Solves the bezier's x for t
+// (Newton's method, falling back to bisection), then returns its y.
+const cubicBezier = (x1, y1, x2, y2) => {
+  const bez = (t, a, b) => 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3;
+  const dBez = (t, a, b) => 3 * a * (1 - t) ** 2 + 6 * (b - a) * t * (1 - t) + 3 * (1 - b) * t * t;
+  return x => {
+    if (x <= 0 || x >= 1) return x <= 0 ? 0 : 1;
+    let t = x;
+    for (let i = 0; i < 8; i++) {
+      const d = dBez(t, x1, x2);
+      if (Math.abs(d) < 1e-6) break;
+      t -= (bez(t, x1, x2) - x) / d;
+    }
+    if (!(t >= 0 && t <= 1) || Math.abs(bez(t, x1, x2) - x) > 1e-5) {
+      let lo = 0, hi = 1;
+      for (let i = 0; i < 40; i++) { t = (lo + hi) / 2; if (bez(t, x1, x2) < x) lo = t; else hi = t; }
+    }
+    return bez(t, y1, y2);
+  };
+};
+const EASE_70_70 = cubicBezier(0.7, 0, 0.3, 1);
+const mapSvg = document.getElementById('map-svg');
+const mapLabel = document.getElementById('map-label');
+mapSvg.innerHTML = '<image href="map/aerial.webp" width="1200" height="800"/>' +
+  mapZones.map(z => `<g class="zone${z.current ? ' current' : ''}" data-zone="${z.id}">${z.shape}</g>`).join('');
+mapSvg.querySelectorAll('.zone').forEach(g => {
+  const zone = mapZones.find(z => z.id === g.dataset.zone);
+  const arrow = zone.arrow && arrowMarkers.find(a => a.id === zone.arrow);
+  const arrowEl = () => arrow && document.getElementById(`psv-marker-${arrow.id}`);
+  g.addEventListener('mouseenter', () => {
+    mapLabel.textContent = zone.name; mapLabel.classList.add('show');
+    // "you are here" zone re-centers on the opening view; any other zone turns the panorama to
+    // face the arrow that leads there, and pulses it
+    if (zone.current) {
+      viewer.animate({ ...START_VIEW, speed: 1000, easing: EASE_70_70 });
+    } else if (arrow) {
+      viewer.animate({ yaw: arrow.position.yaw, pitch: `${parseFloat(arrow.position.pitch) + ARROW_VIEW_LIFT}deg`, speed: 1000, easing: EASE_70_70 });
+      arrowEl()?.classList.add('tour-arrow--focus');
+    }
+  });
+  g.addEventListener('mouseleave', () => {
+    mapLabel.classList.remove('show');
+    arrowEl()?.classList.remove('tour-arrow--focus');
+  });
+  g.addEventListener('click', () => console.log(`map zone: ${zone.id}`, zone.target ?? '(no target yet)'));
+});
+
+// banner timeline, in frames
+const FPS = 30, DROP = 9, STAGGER = 60, HOLD = 150, FADE = 30;
+const TOTAL = STAGGER + HOLD + FADE;
+const banner = document.getElementById('banner');
+const text = banner.textContent;
+banner.textContent = '';
+const spans = [...text].map(ch => {
+  const s = document.createElement('span');
+  s.textContent = ch === ' ' ? ' ' : ch;
+  s.style.display = 'inline-block';
+  banner.append(s);
+  return s;
+});
+const letters = spans.filter(s => s.textContent !== ' ');
+letters.forEach((s, i) => {
+  const start = Math.round(i * (STAGGER - DROP) / (letters.length - 1));
+  const at = frame => frame / TOTAL;
+  s.animate([
+    { opacity: 0, transform: 'translateY(-50px)', offset: 0 },
+    { opacity: 0, transform: 'translateY(-50px)', offset: at(start) },
+    { opacity: 1, transform: 'translateY(0)', offset: at(start + DROP) },
+    { opacity: 1, transform: 'translateY(0)', offset: at(STAGGER + HOLD) },
+    { opacity: 0, transform: 'translateY(0)', offset: 1 },
+  ], { duration: TOTAL / FPS * 1000, iterations: Infinity });
+});
+</script>
+</body>
+</html>
